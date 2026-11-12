@@ -1,0 +1,36 @@
+[project]
+name = "final-term"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "carlesoctav", email = "carlesoctavianus@tuta.io" }
+]
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "sws-config>=0.10.1",
+    "transformers>=5.22.2",
+    "trl",
+    "unsloth>=2026.11.3",
+    "unsloth-zoo>=2026.11.3",
+    "flash-attn",
+    "trackio>=0.45.0",
+    "ffpa-attn>=0.2.4",
+    "gemma-triton-flash-attn",
+]
+
+[tool.uv.sources]
+flash-attn = { url = "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13/flash_attn-2.8.4+cu13torch2.14cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" }
+gemma-triton-flash-attn = { git = "https://github.com/zzhhjjj/gemma-triton-flash-attn" }
+
+[tool.uv]
+override-dependencies = [
+    "transformers>=5.22.2",
+]
+
+[project.scripts]
+final-term = "final_term:main"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"

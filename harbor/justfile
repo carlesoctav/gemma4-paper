@@ -1,0 +1,446 @@
+set shell := ["bash", "-uc"]
+
+# ==============================================================================
+# vLLM Server Recipes
+# ==============================================================================
+
+_serve_vllm *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -- {{args}}
+    port="8000"
+    max_model_len="65536"
+    attn_backend="TRITON_ATTN"
+    model="google/gemma-4-E4B-it"
+    drafter="google/gemma-4-E4B-it-assistant"
+    max_lora_rank="32"
+    kv_offloading_backend="native"
+    kv_offloading_size="20"
+    num_spec=""
+    lora_args=()
+    extra=()
+
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        port=*|PORT=*) port="${1#*=}"; shift ;;
+        max_model_len=*|MAX_MODEL_LEN=*) max_model_len="${1#*=}"; shift ;;
+        attn_backend=*|ATTN_BACKEND=*|ab=*) attn_backend="${1#*=}"; shift ;;
+        model=*|MODEL=*) model="${1#*=}"; shift ;;
+        drafter=*|DRAFTER=*) drafter="${1#*=}"; shift ;;
+        max_lora_rank=*|MAX_LORA_RANK=*) max_lora_rank="${1#*=}"; shift ;;
+        kv_offloading_backend=*|KV_OFFLOADING_BACKEND=*) kv_offloading_backend="${1#*=}"; shift ;;
+        kv_offloading_size=*|KV_OFFLOADING_SIZE=*|kv=*) kv_offloading_size="${1#*=}"; shift ;;
+        num_spec=*|NUM_SPEC=*) num_spec="${1#*=}"; shift ;;
+        --lora-module|--lora-modules) shift; lora_args+=("$1"); shift ;;
+        [0-9]) num_spec="$1"; shift ;;
+        *) extra+=("$1"); shift ;;
+      esac
+    done
+
+    lora_flags=()
+    if [ "${#lora_args[@]}" -gt 0 ]; then
+      lora_flags=(--lora-modules "${lora_args[@]}")
+    fi
+
+    spec_flags=()
+    if [ -n "$num_spec" ] && [ "$num_spec" != "0" ]; then
+      spec_flags=(--speculative-config "{\"method\": \"mtp\", \"model\": \"$drafter\", \"num_speculative_tokens\": $num_spec}")
+    fi
+
+    exec vllm serve "$model" \
+      --port "$port" \
+      --max-model-len "$max_model_len" \
+      --attention-backend "$attn_backend" \
+      --kv-offloading-backend "$kv_offloading_backend" \
+      --kv-offloading-size "$kv_offloading_size" \
+      --enable-auto-tool-choice \
+      --tool-call-parser gemma4 \
+      --reasoning-parser gemma4 \
+      --exclude-tools-when-tool-choice-none \
+      --enable-lora \
+      --max-lora-rank "$max_lora_rank" \
+      ${lora_flags[@]+"${lora_flags[@]}"} \
+      ${spec_flags[@]+"${spec_flags[@]}"} \
+      ${extra[@]+"${extra[@]}"}
+
+# 1. vllm-final: Serve Gemma 4 + grafting (lambda=1) & simple-lora-sft from /content/bucket/final
+vllm-final *args:
+    just _serve_vllm {{args}} \
+      --lora-modules "grafting-lr-1e4-lam-1=/content/bucket/final/grafting-lr-1e4-lam-1" \
+      --lora-modules "simple-lora-1e4=/content/bucket/final/simple-lora-1e4"
+
+# 2. vllm-1e4-checkpoint: Serve Gemma 4 + checkpoints 50 & 75 for grafting (lambda=1) & simple-lora-sft
+vllm-1e4-checkpoint *args:
+    just _serve_vllm {{args}} \
+      --lora-modules "grafting-lr-1e4-lam-1-checkpoint-50=/content/bucket/final/grafting-lr-1e4-lam-1-checkpoint-50" \
+      --lora-modules "grafting-lr-1e4-lam-1-checkpoint-75=/content/bucket/final/grafting-lr-1e4-lam-1-checkpoint-75" \
+      --lora-modules "simple-lora-1e4-checkpoint-50=/content/bucket/final/simple-lora-1e4-checkpoint-50" \
+      --lora-modules "simple-lora-1e4-checkpoint-75=/content/bucket/final/simple-lora-1e4-checkpoint-75"
+
+# 3. vllm-1e5: Serve Gemma 4 + lr=1e-5 grafting (lambda=1) & simple-lora-sft from /content/bucket/final
+vllm-1e5 *args:
+    just _serve_vllm {{args}} \
+      --lora-modules "grafting-lr-1e5-lam-1=/content/bucket/final/grafting-lr-1e5-lam-1" \
+      --lora-modules "simple-lora-1e5=/content/bucket/final/simple-lora-1e5"
+
+# 4. vllm-1e5-checkpoint: Serve Gemma 4 + lr=1e-5 checkpoints 50 & 75 for grafting (lambda=1) & simple-lora-sft
+vllm-1e5-checkpoint *args:
+    just _serve_vllm {{args}} \
+      --lora-modules "grafting-lr-1e5-lam-1-checkpoint-50=/content/bucket/final/grafting-lr-1e5-lam-1-checkpoint-50" \
+      --lora-modules "grafting-lr-1e5-lam-1-checkpoint-75=/content/bucket/final/grafting-lr-1e5-lam-1-checkpoint-75" \
+      --lora-modules "simple-lora-1e5-checkpoint-50=/content/bucket/final/simple-lora-1e5-checkpoint-50" \
+      --lora-modules "simple-lora-1e5-checkpoint-75=/content/bucket/final/simple-lora-1e5-checkpoint-75"
+
+# 5. vllm-1e3: Serve Gemma 4 + lr=1e-3 grafting (lambda=1) from /content/bucket/final
+vllm-1e3 *args:
+    just _serve_vllm {{args}} \
+      --lora-modules "grafting-lr-1e3-lam-1=/content/bucket/final/grafting-lr-1e3-lam-1"
+
+# 6. vllm-mix: Serve Gemma 4 + latest e4b_mix (lr=1e-3) checkpoints 100, 75, 50
+vllm-mix *args:
+    just _serve_vllm {{args}} \
+      --lora-modules "mix-checkpoint-100=/content/bucket/e4b_mix_termgrade_p95_split_0.001/checkpoint-100" \
+      --lora-modules "mix-checkpoint-75=/content/bucket/e4b_mix_termgrade_p95_split_0.001/checkpoint-75" \
+      --lora-modules "mix-checkpoint-50=/content/bucket/e4b_mix_termgrade_p95_split_0.001/checkpoint-50"
+
+# 7. vllm-oplora-k-128: Serve Gemma 4 + e4b_it_oplora_k=128_r=32_lr=0.0001 lora_adapter
+vllm-oplora-k-128 *args:
+    just _serve_vllm {{args}} \
+      --lora-modules "oplora-k-128=/content/bucket/e4b_it_oplora_k=128_r=32_lr=0.0001/lora_adapter"
+
+# 8. vllm-oplora-r90: Serve Gemma 4 + e4b_it_oplora_r_frac=0.9_r=32_lr=0.0001 lora_adapter
+vllm-oplora-r90 *args:
+    just _serve_vllm {{args}} \
+      --lora-modules "oplora-r90=/content/bucket/e4b_it_oplora_r_frac=0.9_r=32_lr=0.0001/lora_adapter"
+
+# 9. vllm-oplora-v2-r90: Serve Gemma 4 + e4b_it_oplora_improve_r_frac=0.9_r=32_lr=0.0001 lora_adapter
+vllm-oplora-v2-r90 *args:
+    just _serve_vllm {{args}} \
+      --lora-modules "oplora-v2-r90=/content/bucket/e4b_it_oplora_improve_r_frac=0.9_r=32_lr=0.0001/lora_adapter"
+
+# ==============================================================================
+# Harbor Evaluation Core Runners
+# ==============================================================================
+
+# New task: TermGrade evaluator (terminus-2 agent)
+_eval_termgrade default_k default_models *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    part="eval_tasks/termgrade-100"
+    n="8"
+    k="{{default_k}}"
+    tag=""
+    prefix=""
+    job_name=""
+    jobs_dir="jobs"
+    base_url="http://127.0.0.1:8000/v1"
+    lora=""
+    model_name=""
+    upload_flag="--upload"
+    extra=()
+
+    for arg in {{args}}; do
+      case "$arg" in
+        part=*|PART=*) part="${arg#*=}" ;;
+        n=*|N=*) n="${arg#*=}" ;;
+        k=*|K=*) k="${arg#*=}" ;;
+        tag=*|TAG=*) tag="${arg#*=}" ;;
+        prefix=*|PREFIX=*) prefix="${arg#*=}" ;;
+        job_name=*|JOB_NAME=*) job_name="${arg#*=}" ;;
+        jobs_dir=*|JOBS_DIR=*) jobs_dir="${arg#*=}" ;;
+        base_url=*|BASE_URL=*) base_url="${arg#*=}" ;;
+        lora=*|LORA=*) lora="${arg#*=}" ;;
+        m=*|M=*|model=*|models=*|model_name=*|MODEL=*|MODELS=*) model_name="${arg#*=}" ;;
+        --no-upload|no_upload=true|upload=false) upload_flag="" ;;
+        --upload|upload=true) upload_flag="--upload" ;;
+        *) extra+=("$arg") ;;
+      esac
+    done
+
+    export DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/1001/podman/podman.sock}"
+    export PATH="/root/.local/bin:$PATH"
+    export PYTHONPATH="$PWD:${PYTHONPATH:-}"
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
+
+    mkdir -p "$jobs_dir"
+
+    models_to_eval=()
+    if [ -n "$model_name" ]; then
+      for m in ${model_name//,/ }; do
+        models_to_eval+=("$m")
+      done
+    elif [ -n "$lora" ]; then
+      for m in ${lora//,/ }; do
+        models_to_eval+=("$m")
+      done
+    else
+      for m in {{default_models}}; do
+        models_to_eval+=("$m")
+      done
+    fi
+
+    total="${#models_to_eval[@]}"
+    idx=0
+    for m in "${models_to_eval[@]}"; do
+      idx=$((idx + 1))
+      clean_m="${m#openai/}"
+      clean_m="${clean_m//\//-}"
+      clean_p="${part#./}"
+      clean_p="${clean_p//\//-}"
+
+      if [ -n "$job_name" ] && [ "$total" -eq 1 ]; then
+        cur_job_name="$job_name"
+      else
+        cur_job_name="${clean_m}-${clean_p}"
+        [ -n "$tag" ] && cur_job_name="${cur_job_name}-${tag}"
+        [ "$k" -gt 1 ] && cur_job_name="${cur_job_name}-pass${k}"
+      fi
+      [ -n "$prefix" ] && cur_job_name="${prefix}${cur_job_name}"
+
+      m_flag="openai/${m#openai/}"
+
+      echo "========================================================================"
+      echo "[$idx/$total] TermGrade Eval: $m (job: $cur_job_name, n: $n, k: $k)"
+      echo "========================================================================"
+
+      harbor run -a terminus-2 \
+        -m "$m_flag" \
+        --base-url "$base_url" \
+        --ak model_info='{"max_input_tokens": 49152}' \
+        --ak proactive_summarization_threshold=16384 \
+        --ak llm_call_kwargs='{"chat_template_kwargs": {"enable_thinking": true}}' \
+        -p "$part" \
+        -n "$n" \
+        -k "$k" \
+        --job-name "$cur_job_name" \
+        --jobs-dir "$jobs_dir" \
+        ${upload_flag:+"$upload_flag"} \
+        ${extra[@]+"${extra[@]}"}
+    done
+
+# Old task: GitHub PR evaluator (pi:PiTinker agent)
+_eval_gh_pr default_k default_models *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    part="eval_tasks/gemma4_gh_pr"
+    n="8"
+    k="{{default_k}}"
+    tag=""
+    prefix=""
+    job_name=""
+    jobs_dir="jobs"
+    base_url="http://127.0.0.1:8000/v1"
+    agent="pi:PiTinker"
+    lora=""
+    model_name=""
+    upload_flag="--upload"
+    extra=()
+
+    for arg in {{args}}; do
+      case "$arg" in
+        part=*|PART=*) part="${arg#*=}" ;;
+        n=*|N=*) n="${arg#*=}" ;;
+        k=*|K=*) k="${arg#*=}" ;;
+        tag=*|TAG=*) tag="${arg#*=}" ;;
+        prefix=*|PREFIX=*) prefix="${arg#*=}" ;;
+        job_name=*|JOB_NAME=*) job_name="${arg#*=}" ;;
+        jobs_dir=*|JOBS_DIR=*) jobs_dir="${arg#*=}" ;;
+        base_url=*|BASE_URL=*) base_url="${arg#*=}" ;;
+        agent=*|AGENT=*) agent="${arg#*=}" ;;
+        lora=*|LORA=*) lora="${arg#*=}" ;;
+        m=*|M=*|model=*|models=*|model_name=*|MODEL=*|MODELS=*) model_name="${arg#*=}" ;;
+        --no-upload|no_upload=true|upload=false) upload_flag="" ;;
+        --upload|upload=true) upload_flag="--upload" ;;
+        *) extra+=("$arg") ;;
+      esac
+    done
+
+    export DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/1001/podman/podman.sock}"
+    export PATH="/root/.local/bin:$PATH"
+    export PYTHONPATH="$PWD:${PYTHONPATH:-}"
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
+
+    mkdir -p "$jobs_dir"
+
+    models_to_eval=()
+    if [ -n "$model_name" ]; then
+      for m in ${model_name//,/ }; do
+        models_to_eval+=("$m")
+      done
+    elif [ -n "$lora" ]; then
+      for m in ${lora//,/ }; do
+        models_to_eval+=("$m")
+      done
+    else
+      for m in {{default_models}}; do
+        models_to_eval+=("$m")
+      done
+    fi
+
+    total="${#models_to_eval[@]}"
+    idx=0
+    for m in "${models_to_eval[@]}"; do
+      idx=$((idx + 1))
+      clean_m="${m#openai/}"
+      clean_m="${clean_m//\//-}"
+      clean_p="${part#./}"
+      clean_p="${clean_p//\//-}"
+
+      if [ -n "$job_name" ] && [ "$total" -eq 1 ]; then
+        cur_job_name="$job_name"
+      else
+        cur_job_name="${clean_m}-${clean_p}"
+        [ -n "$tag" ] && cur_job_name="${cur_job_name}-${tag}"
+        [ "$k" -gt 1 ] && cur_job_name="${cur_job_name}-pass${k}"
+      fi
+      [ -n "$prefix" ] && cur_job_name="${prefix}${cur_job_name}"
+
+      m_flag="openai/${m#openai/}"
+
+      echo "========================================================================"
+      echo "[$idx/$total] GH PR Eval: $m (job: $cur_job_name, n: $n, k: $k)"
+      echo "========================================================================"
+
+      harbor run -a "$agent" \
+        -m "$m_flag" \
+        --base-url "$base_url" \
+        --api-format openai_chat_completions \
+        --skip-credential-checks \
+        --ak skip_install=true \
+        -p "$part" \
+        -n "$n" \
+        -k "$k" \
+        --job-name "$cur_job_name" \
+        --jobs-dir "$jobs_dir" \
+        ${upload_flag:+"$upload_flag"} \
+        ${extra[@]+"${extra[@]}"}
+    done
+
+
+# ==============================================================================
+# Final Evaluation Recipes
+# ==============================================================================
+
+# Evaluate base IT model (google/gemma-4-E4B-it) on old task (GH PR)
+harbor-old-base *args:
+    just _eval_gh_pr 1 "google/gemma-4-E4B-it" {{args}}
+
+# Evaluate base IT model (google/gemma-4-E4B-it) on new task (TermGrade)
+harbor-new-base *args:
+    just _eval_termgrade 1 "google/gemma-4-E4B-it" {{args}}
+
+# Evaluate final models on old task (GH PR)
+harbor-old-final *args:
+    just _eval_gh_pr 1 "grafting-lr-1e4-lam-1 simple-lora-1e4" {{args}}
+
+# Evaluate final models on new task (TermGrade)
+harbor-new-final *args:
+    just _eval_termgrade 1 "grafting-lr-1e4-lam-1 simple-lora-1e4" {{args}}
+
+# Evaluate 1e-4 checkpoints (50, 75) on old task (GH PR)
+harbor-old-1e4-checkpoint *args:
+    just _eval_gh_pr 1 "grafting-lr-1e4-lam-1-checkpoint-50 grafting-lr-1e4-lam-1-checkpoint-75 simple-lora-1e4-checkpoint-50 simple-lora-1e4-checkpoint-75" {{args}}
+
+# Evaluate 1e-4 checkpoints (50, 75) on new task (TermGrade)
+harbor-new-1e4-checkpoint *args:
+    just _eval_termgrade 1 "grafting-lr-1e4-lam-1-checkpoint-50 grafting-lr-1e4-lam-1-checkpoint-75 simple-lora-1e4-checkpoint-50 simple-lora-1e4-checkpoint-75" {{args}}
+
+# Evaluate lr=1e-5 models on old task (GH PR)
+harbor-old-1e5 *args:
+    just _eval_gh_pr 1 "grafting-lr-1e5-lam-1 simple-lora-1e5" {{args}}
+
+# Evaluate lr=1e-5 models on new task (TermGrade)
+harbor-new-1e5 *args:
+    just _eval_termgrade 1 "grafting-lr-1e5-lam-1 simple-lora-1e5" {{args}}
+
+# Evaluate lr=1e-5 checkpoints (50, 75) on old task (GH PR)
+harbor-old-1e5-checkpoint *args:
+    just _eval_gh_pr 1 "grafting-lr-1e5-lam-1-checkpoint-50 grafting-lr-1e5-lam-1-checkpoint-75 simple-lora-1e5-checkpoint-50 simple-lora-1e5-checkpoint-75" {{args}}
+
+# Evaluate lr=1e-5 checkpoints (50, 75) on new task (TermGrade)
+harbor-new-1e5-checkpoint *args:
+    just _eval_termgrade 1 "grafting-lr-1e5-lam-1-checkpoint-50 grafting-lr-1e5-lam-1-checkpoint-75 simple-lora-1e5-checkpoint-50 simple-lora-1e5-checkpoint-75" {{args}}
+
+# Evaluate lr=1e-3 grafting model on old task (GH PR)
+harbor-old-1e3 *args:
+    just _eval_gh_pr 1 "grafting-lr-1e3-lam-1" {{args}}
+
+# Evaluate lr=1e-3 grafting model on new task (TermGrade)
+harbor-new-1e3 *args:
+    just _eval_termgrade 1 "grafting-lr-1e3-lam-1" {{args}}
+
+# Evaluate e4b_mix checkpoints (100 -> 75 -> 50) on old task (GH PR)
+harbor-old-mix *args:
+    just _eval_gh_pr 1 "mix-checkpoint-100 mix-checkpoint-75 mix-checkpoint-50" {{args}}
+
+# Evaluate e4b_mix checkpoints (100 -> 75 -> 50) on new task (TermGrade)
+harbor-new-mix *args:
+    just _eval_termgrade 1 "mix-checkpoint-100 mix-checkpoint-75 mix-checkpoint-50" {{args}}
+
+# Evaluate oplora-k-128 model on old task (GH PR)
+harbor-old-oplora-k-128 *args:
+    just _eval_gh_pr 1 "oplora-k-128" {{args}}
+
+# Evaluate oplora-k-128 model on new task (TermGrade)
+harbor-new-oplora-k-128 *args:
+    just _eval_termgrade 1 "oplora-k-128" {{args}}
+
+# Evaluate oplora-r90 model on old task (GH PR)
+harbor-old-oplora-r90 *args:
+    just _eval_gh_pr 1 "oplora-r90" {{args}}
+
+# Evaluate oplora-r90 model on new task (TermGrade)
+harbor-new-oplora-r90 *args:
+    just _eval_termgrade 1 "oplora-r90" {{args}}
+
+# Evaluate oplora-v2-r90 model on old task (GH PR)
+harbor-old-oplora-v2-r90 *args:
+    just _eval_gh_pr 1 "oplora-v2-r90" {{args}}
+
+# Evaluate oplora-v2-r90 model on new task (TermGrade)
+harbor-new-oplora-v2-r90 *args:
+    just _eval_termgrade 1 "oplora-v2-r90" {{args}}
+
+# Evaluate oracle agent on new task (TermGrade)
+harbor-new-oracle *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    part="eval_tasks/termgrade-100"
+    n="8"
+    prefix=""
+    job_name="oracle-eval_tasks-termgrade-100"
+    jobs_dir="jobs"
+    upload_flag="--upload"
+    extra=()
+
+    for arg in {{args}}; do
+      case "$arg" in
+        part=*|PART=*) part="${arg#*=}" ;;
+        n=*|N=*) n="${arg#*=}" ;;
+        prefix=*|PREFIX=*) prefix="${arg#*=}" ;;
+        job_name=*|JOB_NAME=*) job_name="${arg#*=}" ;;
+        jobs_dir=*|JOBS_DIR=*) jobs_dir="${arg#*=}" ;;
+        --no-upload|no_upload=true|upload=false) upload_flag="" ;;
+        --upload|upload=true) upload_flag="--upload" ;;
+        *) extra+=("$arg") ;;
+      esac
+    done
+
+    export DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/1001/podman/podman.sock}"
+    export PATH="/root/.local/bin:$PATH"
+    export PYTHONPATH="$PWD:${PYTHONPATH:-}"
+
+    mkdir -p "$jobs_dir"
+    cur_job_name="${prefix}${job_name}"
+
+    harbor run -a oracle \
+      -p "$part" \
+      -n "$n" \
+      --job-name "$cur_job_name" \
+      --jobs-dir "$jobs_dir" \
+      ${upload_flag:+"$upload_flag"} \
+      ${extra[@]+"${extra[@]}"}
+
+# Build Task Docker Images in Parallel & Update task.toml
+build-tasks *args:
+    python3 build_all_tasks.py {{args}}

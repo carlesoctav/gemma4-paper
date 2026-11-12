@@ -1,0 +1,406 @@
+set shell := ["bash", "-uc"]
+
+# ==============================================================================
+# vLLM Server Recipes
+# ==============================================================================
+
+# Helper: Default vLLM serve launcher
+_serve_vllm *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -- {{args}}
+    port="8000"
+    max_model_len="65536"
+    attn_backend="TRITON_ATTN"
+    model="google/gemma-4-E4B-it"
+    drafter="google/gemma-4-E4B-it-assistant"
+    max_lora_rank="16"
+    num_spec=""
+    lora_args=()
+    extra=()
+
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        port=*|PORT=*) port="${1#*=}"; shift ;;
+        max_model_len=*|MAX_MODEL_LEN=*) max_model_len="${1#*=}"; shift ;;
+        attn_backend=*|ATTN_BACKEND=*|ab=*) attn_backend="${1#*=}"; shift ;;
+        model=*|MODEL=*) model="${1#*=}"; shift ;;
+        drafter=*|DRAFTER=*) drafter="${1#*=}"; shift ;;
+        max_lora_rank=*|MAX_LORA_RANK=*) max_lora_rank="${1#*=}"; shift ;;
+        num_spec=*|NUM_SPEC=*) num_spec="${1#*=}"; shift ;;
+        --lora-module) shift; lora_args+=(--lora-modules "$1"); shift ;;
+        --lora-modules) shift; lora_args+=(--lora-modules "$1"); shift ;;
+        [0-9]) num_spec="$1"; shift ;;
+        *) extra+=("$1"); shift ;;
+      esac
+    done
+
+    spec_flags=()
+    if [ -n "$num_spec" ] && [ "$num_spec" != "0" ]; then
+      spec_flags=(--speculative-config "{\"method\": \"mtp\", \"model\": \"$drafter\", \"num_speculative_tokens\": $num_spec}")
+    fi
+
+    exec vllm serve "$model" \
+      --port "$port" \
+      --max-model-len "$max_model_len" \
+      --attention-backend "$attn_backend" \
+      --enable-auto-tool-choice \
+      --tool-call-parser gemma4 \
+      --reasoning-parser gemma4 \
+      --exclude-tools-when-tool-choice-none \
+      --enable-lora \
+      --max-lora-rank "$max_lora_rank" \
+      "${lora_args[@]}" \
+      ${spec_flags[@]+"${spec_flags[@]}"} \
+      ${extra[@]+"${extra[@]}"}
+
+# ------------------------------------------------------------------------------
+# 1. vllm-final: Serve Gemma 4 base + 1.0 Grafting and Simple-LoRA-SFT
+# ------------------------------------------------------------------------------
+# Usage:
+#   just vllm-final
+#   just vllm-final port=8000 max_model_len=32768
+vllm-final *args:
+    just _serve_vllm {{args}} \
+      --lora-modules "grafting-1.0=carlesoctav/grafting-e4b_base_termgrade-1.0" \
+      --lora-modules "carlesoctav/grafting-e4b_base_termgrade-1.0=carlesoctav/grafting-e4b_base_termgrade-1.0" \
+      --lora-modules "e4b-it-simple-lora-sft=carlesoctav/e4b-it-simple-lora-sft" \
+      --lora-modules "simple-lora-sft=carlesoctav/e4b-it-simple-lora-sft" \
+      --lora-modules "carlesoctav/e4b-it-simple-lora-sft=carlesoctav/e4b-it-simple-lora-sft"
+
+# Default alias to vllm-final
+vllm *args:
+    just vllm-final {{args}}
+
+# ------------------------------------------------------------------------------
+# 2. vllm-lambda-sweep: Serve Gemma 4 base + all 4 Grafting lambda checkpoints
+# ------------------------------------------------------------------------------
+# Usage:
+#   just vllm-lambda-sweep
+vllm-lambda-sweep *args:
+    just _serve_vllm {{args}} \
+      --lora-modules "grafting-0.3=carlesoctav/grafting-e4b_base_termgrade-0.3" \
+      --lora-modules "carlesoctav/grafting-e4b_base_termgrade-0.3=carlesoctav/grafting-e4b_base_termgrade-0.3" \
+      --lora-modules "grafting-0.5=carlesoctav/grafting-e4b_base_termgrade-0.5" \
+      --lora-modules "carlesoctav/grafting-e4b_base_termgrade-0.5=carlesoctav/grafting-e4b_base_termgrade-0.5" \
+      --lora-modules "grafting-0.7=carlesoctav/grafting-e4b_base_termgrade-0.7" \
+      --lora-modules "carlesoctav/grafting-e4b_base_termgrade-0.7=carlesoctav/grafting-e4b_base_termgrade-0.7" \
+      --lora-modules "grafting-1.0=carlesoctav/grafting-e4b_base_termgrade-1.0" \
+      --lora-modules "carlesoctav/grafting-e4b_base_termgrade-1.0=carlesoctav/grafting-e4b_base_termgrade-1.0"
+
+# ------------------------------------------------------------------------------
+# 3. vllm-checkpoint-simple-sft: Serve Gemma 4 base + Simple SFT Checkpoints
+# ------------------------------------------------------------------------------
+# Checkpoints 30, 60, 90
+# Usage:
+#   just vllm-checkpoint-simple-sft
+vllm-checkpoint-simple-sft *args:
+    just _serve_vllm {{args}} \
+      --lora-modules "checkpoint-30=carlesoctav/e4b-it-simple-lora-sft-checkpoint-30" \
+      --lora-modules "carlesoctav/e4b-it-simple-lora-sft-checkpoint-30=carlesoctav/e4b-it-simple-lora-sft-checkpoint-30" \
+      --lora-modules "checkpoint-60=carlesoctav/e4b-it-simple-lora-sft-checkpoint-60" \
+      --lora-modules "carlesoctav/e4b-it-simple-lora-sft-checkpoint-60=carlesoctav/e4b-it-simple-lora-sft-checkpoint-60" \
+      --lora-modules "checkpoint-90=carlesoctav/e4b-it-simple-lora-sft-checkpoint-90" \
+      --lora-modules "carlesoctav/e4b-it-simple-lora-sft-checkpoint-90=carlesoctav/e4b-it-simple-lora-sft-checkpoint-90"
+
+# ------------------------------------------------------------------------------
+# 4. vllm-checkpoint-grafting: Serve Gemma 4 base + Grafting Checkpoints
+# ------------------------------------------------------------------------------
+# Placeholder for future grafting checkpoints
+# Usage:
+#   just vllm-checkpoint-grafting
+vllm-checkpoint-grafting *args:
+    just _serve_vllm {{args}} \
+      --lora-modules "grafting-checkpoint-30=carlesoctav/grafting-e4b_base_termgrade-checkpoint-30" \
+      --lora-modules "carlesoctav/grafting-e4b_base_termgrade-checkpoint-30=carlesoctav/grafting-e4b_base_termgrade-checkpoint-30" \
+      --lora-modules "grafting-checkpoint-60=carlesoctav/grafting-e4b_base_termgrade-checkpoint-60" \
+      --lora-modules "carlesoctav/grafting-e4b_base_termgrade-checkpoint-60=carlesoctav/grafting-e4b_base_termgrade-checkpoint-60" \
+      --lora-modules "grafting-checkpoint-90=carlesoctav/grafting-e4b_base_termgrade-checkpoint-90" \
+      --lora-modules "carlesoctav/grafting-e4b_base_termgrade-checkpoint-90=carlesoctav/grafting-e4b_base_termgrade-checkpoint-90"
+
+
+# ==============================================================================
+# Harbor Evaluation Core Runners
+# ==============================================================================
+
+# Generic TermGrade evaluator (terminus-2 agent)
+_eval_termgrade default_k default_models *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    part="eval_tasks/termgrade-100"
+    n="8"
+    k="{{default_k}}"
+    tag=""
+    job_name=""
+    jobs_dir="jobs"
+    base_url="http://127.0.0.1:8000/v1"
+    lora=""
+    model_name=""
+    extra=()
+
+    for arg in {{args}}; do
+      case "$arg" in
+        part=*|PART=*) part="${arg#*=}" ;;
+        n=*|N=*) n="${arg#*=}" ;;
+        k=*|K=*) k="${arg#*=}" ;;
+        tag=*|TAG=*) tag="${arg#*=}" ;;
+        job_name=*|JOB_NAME=*) job_name="${arg#*=}" ;;
+        jobs_dir=*|JOBS_DIR=*) jobs_dir="${arg#*=}" ;;
+        base_url=*|BASE_URL=*) base_url="${arg#*=}" ;;
+        lora=*|LORA=*) lora="${arg#*=}" ;;
+        model=*|model_name=*|MODEL=*) model_name="${arg#*=}" ;;
+        *) extra+=("$arg") ;;
+      esac
+    done
+
+    export DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/1001/podman/podman.sock}"
+    export PATH="/root/.local/bin:$PATH"
+    export PYTHONPATH="$PWD:${PYTHONPATH:-}"
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
+
+    mkdir -p "$jobs_dir"
+
+    models_to_eval=()
+    if [ -n "$model_name" ]; then
+      models_to_eval+=("$model_name")
+    elif [ -n "$lora" ]; then
+      models_to_eval+=("$lora")
+    else
+      for m in {{default_models}}; do
+        models_to_eval+=("$m")
+      done
+    fi
+
+    total="${#models_to_eval[@]}"
+    idx=0
+    for m in "${models_to_eval[@]}"; do
+      idx=$((idx + 1))
+      clean_m="${m#openai/}"
+      clean_m="${clean_m//\//-}"
+      clean_p="${part#./}"
+      clean_p="${clean_p//\//-}"
+
+      if [ -n "$job_name" ] && [ "$total" -eq 1 ]; then
+        cur_job_name="$job_name"
+      else
+        cur_job_name="${clean_m}-${clean_p}"
+        [ -n "$tag" ] && cur_job_name="${cur_job_name}-${tag}"
+        [ "$k" -gt 1 ] && cur_job_name="${cur_job_name}-pass${k}"
+      fi
+
+      m_flag="$m"
+      if [[ "$m_flag" != *"/"* ]] || [[ "$m_flag" == "google/"* ]] || [[ "$m_flag" == "carlesoctav/"* ]] || [[ "$m_flag" == "grafting-"* ]] || [[ "$m_flag" == "simple-"* ]] || [[ "$m_flag" == "checkpoint-"* ]] || [[ "$m_flag" == "e4b-"* ]]; then
+        m_flag="openai/$m_flag"
+      fi
+
+      echo "========================================================================"
+      echo "[$idx/$total] TermGrade Eval: $m (job: $cur_job_name, n: $n, k: $k)"
+      echo "========================================================================"
+
+      harbor run -a terminus-2 \
+        -m "$m_flag" \
+        --base-url "$base_url" \
+        --ak model_info='{"max_input_tokens": 49152}' \
+        --ak proactive_summarization_threshold=16384 \
+        --ak llm_call_kwargs='{"chat_template_kwargs": {"enable_thinking": true, "preserve_thinking": true}}' \
+        --ak interleaved_thinking=true \
+        -p "$part" \
+        -n "$n" \
+        -k "$k" \
+        --job-name "$cur_job_name" \
+        --jobs-dir "$jobs_dir" \
+        --upload \
+        ${extra[@]+"${extra[@]}"}
+    done
+
+# Generic GitHub PR evaluator (pi:PiTinker agent)
+_eval_gh_pr default_k default_models *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    part="eval_tasks/gemma4_gh_pr"
+    n="8"
+    k="{{default_k}}"
+    tag=""
+    job_name=""
+    jobs_dir="jobs"
+    base_url="http://127.0.0.1:8000/v1"
+    agent="pi:PiTinker"
+    lora=""
+    model_name=""
+    extra=()
+
+    for arg in {{args}}; do
+      case "$arg" in
+        part=*|PART=*) part="${arg#*=}" ;;
+        n=*|N=*) n="${arg#*=}" ;;
+        k=*|K=*) k="${arg#*=}" ;;
+        tag=*|TAG=*) tag="${arg#*=}" ;;
+        job_name=*|JOB_NAME=*) job_name="${arg#*=}" ;;
+        jobs_dir=*|JOBS_DIR=*) jobs_dir="${arg#*=}" ;;
+        base_url=*|BASE_URL=*) base_url="${arg#*=}" ;;
+        agent=*|AGENT=*) agent="${arg#*=}" ;;
+        lora=*|LORA=*) lora="${arg#*=}" ;;
+        model=*|model_name=*|MODEL=*) model_name="${arg#*=}" ;;
+        *) extra+=("$arg") ;;
+      esac
+    done
+
+    export DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/1001/podman/podman.sock}"
+    export PATH="/root/.local/bin:$PATH"
+    export PYTHONPATH="$PWD:${PYTHONPATH:-}"
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
+
+    mkdir -p "$jobs_dir"
+
+    models_to_eval=()
+    if [ -n "$model_name" ]; then
+      models_to_eval+=("$model_name")
+    elif [ -n "$lora" ]; then
+      models_to_eval+=("$lora")
+    else
+      for m in {{default_models}}; do
+        models_to_eval+=("$m")
+      done
+    fi
+
+    total="${#models_to_eval[@]}"
+    idx=0
+    for m in "${models_to_eval[@]}"; do
+      idx=$((idx + 1))
+      clean_m="${m#openai/}"
+      clean_m="${clean_m//\//-}"
+      clean_p="${part#./}"
+      clean_p="${clean_p//\//-}"
+
+      if [ -n "$job_name" ] && [ "$total" -eq 1 ]; then
+        cur_job_name="$job_name"
+      else
+        cur_job_name="${clean_m}-${clean_p}"
+        [ -n "$tag" ] && cur_job_name="${cur_job_name}-${tag}"
+        [ "$k" -gt 1 ] && cur_job_name="${cur_job_name}-pass${k}"
+      fi
+
+      m_flag="$m"
+      if [[ "$m_flag" != *"/"* ]] || [[ "$m_flag" == "google/"* ]] || [[ "$m_flag" == "carlesoctav/"* ]] || [[ "$m_flag" == "grafting-"* ]] || [[ "$m_flag" == "simple-"* ]] || [[ "$m_flag" == "checkpoint-"* ]] || [[ "$m_flag" == "e4b-"* ]]; then
+        m_flag="openai/$m_flag"
+      fi
+
+      echo "========================================================================"
+      echo "[$idx/$total] GH PR Eval: $m (job: $cur_job_name, n: $n, k: $k)"
+      echo "========================================================================"
+
+      harbor run -a "$agent" \
+        -m "$m_flag" \
+        --base-url "$base_url" \
+        --api-format openai_chat_completions \
+        --skip-credential-checks \
+        --ak skip_install=true \
+        -p "$part" \
+        -n "$n" \
+        -k "$k" \
+        --job-name "$cur_job_name" \
+        --jobs-dir "$jobs_dir" \
+        --upload \
+        ${extra[@]+"${extra[@]}"}
+    done
+
+
+# ==============================================================================
+# Final Evaluation Recipes (pass@8, k=8)
+# ==============================================================================
+
+# 1. harbor-eval-gh-pr-final: Evaluates grafting-1.0 and simple-lora-sft with pass@8 (k=8)
+# Usage:
+#   just harbor-eval-gh-pr-final n=40
+#   just harbor-eval-gh-pr-final n=40 lora=carlesoctav/grafting-e4b_base_termgrade-1.0
+harbor-eval-gh-pr-final *args:
+    just _eval_gh_pr 8 "carlesoctav/grafting-e4b_base_termgrade-1.0 carlesoctav/e4b-it-simple-lora-sft" {{args}}
+
+# 2. harbor-eval-termgrade-final: Evaluates grafting-1.0 and simple-lora-sft with pass@8 (k=8)
+# Usage:
+#   just harbor-eval-termgrade-final n=40
+#   just harbor-eval-termgrade-final n=40 lora=carlesoctav/e4b-it-simple-lora-sft
+harbor-eval-termgrade-final *args:
+    just _eval_termgrade 8 "carlesoctav/grafting-e4b_base_termgrade-1.0 carlesoctav/e4b-it-simple-lora-sft" {{args}}
+
+
+# ==============================================================================
+# Lambda Sweep Evaluation Recipes (Grafting 0.3, 0.5, 0.7, 1.0)
+# ==============================================================================
+
+# 3. harbor-eval-gh-pr-lambda: Evaluates all 4 grafting lambda adapters on GH PR
+# Usage:
+#   just harbor-eval-gh-pr-lambda n=40
+#   just harbor-eval-gh-pr-lambda n=40 k=8
+harbor-eval-gh-pr-lambda *args:
+    just _eval_gh_pr 1 "carlesoctav/grafting-e4b_base_termgrade-0.3 carlesoctav/grafting-e4b_base_termgrade-0.5 carlesoctav/grafting-e4b_base_termgrade-0.7 carlesoctav/grafting-e4b_base_termgrade-1.0" {{args}}
+
+# 4. harbor-eval-termgrade-lambda: Evaluates all 4 grafting lambda adapters on TermGrade
+# Usage:
+#   just harbor-eval-termgrade-lambda n=40
+#   just harbor-eval-termgrade-lambda n=40 k=8
+harbor-eval-termgrade-lambda *args:
+    just _eval_termgrade 1 "carlesoctav/grafting-e4b_base_termgrade-0.3 carlesoctav/grafting-e4b_base_termgrade-0.5 carlesoctav/grafting-e4b_base_termgrade-0.7 carlesoctav/grafting-e4b_base_termgrade-1.0" {{args}}
+
+
+# ==============================================================================
+# Intermediate Checkpoint Evaluation Recipes: Simple SFT (30, 60, 90)
+# ==============================================================================
+
+# 5. harbor-eval-gh-pr-checkpoint-simple: Evaluates simple-lora-sft checkpoints 30, 60, 90 on GH PR
+# Usage:
+#   just harbor-eval-gh-pr-checkpoint-simple n=40
+#   just harbor-eval-gh-pr-checkpoint-simple n=40 lora=carlesoctav/e4b-it-simple-lora-sft-checkpoint-30
+harbor-eval-gh-pr-checkpoint-simple *args:
+    just _eval_gh_pr 1 "carlesoctav/e4b-it-simple-lora-sft-checkpoint-30 carlesoctav/e4b-it-simple-lora-sft-checkpoint-60 carlesoctav/e4b-it-simple-lora-sft-checkpoint-90" {{args}}
+
+# 6. harbor-eval-termgrade-checkpoint-simple: Evaluates simple-lora-sft checkpoints 30, 60, 90 on TermGrade
+# Usage:
+#   just harbor-eval-termgrade-checkpoint-simple n=40
+harbor-eval-termgrade-checkpoint-simple *args:
+    just _eval_termgrade 1 "carlesoctav/e4b-it-simple-lora-sft-checkpoint-30 carlesoctav/e4b-it-simple-lora-sft-checkpoint-60 carlesoctav/e4b-it-simple-lora-sft-checkpoint-90" {{args}}
+
+
+# ==============================================================================
+# Intermediate Checkpoint Evaluation Recipes: Grafting Checkpoints
+# ==============================================================================
+
+# 7. harbor-eval-gh-pr-checkpoint-grafting: Evaluates grafting checkpoints on GH PR
+# Usage:
+#   just harbor-eval-gh-pr-checkpoint-grafting n=40
+#   just harbor-eval-gh-pr-checkpoint-grafting n=40 lora=carlesoctav/grafting-e4b_base_termgrade-checkpoint-30
+harbor-eval-gh-pr-checkpoint-grafting *args:
+    just _eval_gh_pr 1 "carlesoctav/grafting-e4b_base_termgrade-checkpoint-30 carlesoctav/grafting-e4b_base_termgrade-checkpoint-60 carlesoctav/grafting-e4b_base_termgrade-checkpoint-90" {{args}}
+
+# 8. harbor-eval-termgrade-checkpoint-grafting: Evaluates grafting checkpoints on TermGrade
+# Usage:
+#   just harbor-eval-termgrade-checkpoint-grafting n=40
+harbor-eval-termgrade-checkpoint-grafting *args:
+    just _eval_termgrade 1 "carlesoctav/grafting-e4b_base_termgrade-checkpoint-30 carlesoctav/grafting-e4b_base_termgrade-checkpoint-60 carlesoctav/grafting-e4b_base_termgrade-checkpoint-90" {{args}}
+
+
+# ==============================================================================
+# Backward-Compatible Evaluators
+# ==============================================================================
+
+harbor-eval-term-grade *args:
+    just harbor-eval-termgrade-lambda {{args}}
+
+harbor-eval-term-grade-pass-8 *args:
+    just harbor-eval-termgrade-lambda k=8 {{args}}
+
+harbor-eval-gh-pr *args:
+    just harbor-eval-gh-pr-lambda {{args}}
+
+harbor-eval-gh-pr-pass-8 *args:
+    just harbor-eval-gh-pr-lambda k=8 {{args}}
+
+
+# ==============================================================================
+# Build Task Docker Images in Parallel & Update task.toml
+# ==============================================================================
+# Usage:
+#   just build-tasks eval_tasks/termgrade-100 -j 16
+#   just build-tasks eval_tasks/gemma4_gh_pr -j 16
+build-tasks *args:
+    python3 build_all_tasks.py {{args}}
