@@ -66,6 +66,8 @@ The phase plot below illustrates the trajectories and operating points of these 
 
 ![Pareto Frontier: Old Task Retention vs New Task Acquisition](figures/all_methods_pareto.png)
 
+When fine-tuning Gemma 4 E4B with LoRA on a single new task without replay data, there is no free lunch: methods designed to prevent forgetting in full fine-tuning do not transfer cleanly to PEFT. Off-policy LoRA Grafting fails completely (0.0300 on the new task) because LoRA only adapts linear projections while the surrounding non-LoRA layers (embeddings, norms, and per-layer gates) have already shifted between the Base and IT models. On-policy Subspace Tuning (OPLoRA / SST) either protects too few directions to stop forgetting (oplora-k-128), corrupts AdamW's step scaling when projecting gradients before the optimizer (oplora-r90), or freezes so much of the weight space when projecting after the optimizer (oplora-v2-r90) that it behaves just like early stopping on standard LoRA. Ultimately, in a single-dataset PEFT regime, standard on-policy LoRA (lr=1e-4) remains the only method that actually learns the new terminal task (reaching 0.1010), even though it comes at the cost of forgetting prior coding skills—suggesting that data replay or mixing prior task trajectories is still necessary for continual learning with LoRA.
+
 
 ## References
 
